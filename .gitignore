@@ -1,0 +1,27 @@
+# Dependencies
+aplikacja/leo.app/node_modules/
+aplikacja/leo.app/dist/
+
+# Env files (NIE commitujemy kluczy!)
+aplikacja/leo.app/.env.local
+.env
+.env.local
+.env.production
+
+# Supabase temp
+supabase/.temp/
+
+# Build artifacts
+*.zip
+supabase.exe
+supabase_cli.tar.gz
+
+# Claude Code local settings (contains API tokens)
+.claude/settings.local.json
+
+# Credentials file (contains API keys)
+scripts/credentials.txt
+
+# OS
+.DS_Store
+Thumbs.db
