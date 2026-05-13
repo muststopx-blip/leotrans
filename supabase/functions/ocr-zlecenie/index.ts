@@ -1,11 +1,12 @@
-// PROCES 1 - SZYBKI (~3-5s)
-// Przyjmuje PDF, wywołuje Gemini AI, zwraca dane do formularza
-// Spedytor widzi wynik natychmiast
+// PROCES 1 - SZYBKI (~3-8s)
+// Konwertuje plik na JPG → Gemini wizualnie analizuje dokument → zwraca JSON do formularza
+// WAŻNE: nie OCR tekstu — wizualne rozumowanie całego dokumentu
 
 import { createClient } from 'npm:@supabase/supabase-js@2'
 import { GoogleGenerativeAI } from 'npm:@google/generative-ai'
 import { handleCors, jsonResponse, errorResponse } from '../_shared/cors.ts'
 import { PROMPT_OCR_FAST } from '../_shared/prompts.ts'
+import { fileToImageParts } from '../_shared/convert-to-jpg.ts'
 
 const supabase = createClient(
   Deno.env.get('SUPABASE_URL')!,
@@ -16,8 +17,8 @@ const genai = new GoogleGenerativeAI(Deno.env.get('GEMINI_API_KEY')!)
 const model = genai.getGenerativeModel({
   model: 'gemini-2.5-flash',
   generationConfig: {
-    // @ts-ignore - thinkingConfig not yet in type defs
-    thinkingConfig: { thinkingBudget: 0 },
+    // @ts-ignore
+    thinkingConfig: { thinkingBudget: 0 }, // szybki tryb - bez thinking
   },
 })
 
@@ -27,54 +28,53 @@ Deno.serve(async (req) => {
 
   try {
     const formData = await req.formData()
-    const pdfFile = formData.get('pdf') as File | null
+    const uploadedFile = formData.get('pdf') as File | null
 
-    if (!pdfFile) {
-      return errorResponse('Brak pliku PDF', 400)
+    if (!uploadedFile) {
+      return errorResponse('Brak pliku', 400)
     }
 
-    // 1. Wczytaj PDF jako ArrayBuffer i zakoduj base64 chunkami
-    // (spread ...Uint8Array na dużych plikach wysadza stos)
-    const pdfBuffer = await pdfFile.arrayBuffer()
-    const pdfBytes = new Uint8Array(pdfBuffer)
-    let binary = ''
-    const CHUNK = 8192
-    for (let i = 0; i < pdfBytes.length; i += CHUNK) {
-      binary += String.fromCharCode(...pdfBytes.subarray(i, i + CHUNK))
-    }
-    const pdfBase64 = btoa(binary)
+    // 1. Wczytaj bajty pliku
+    const fileBuffer = await uploadedFile.arrayBuffer()
+    const fileBytes = new Uint8Array(fileBuffer)
+    const originalMime = uploadedFile.type || 'application/octet-stream'
+    const originalName = uploadedFile.name || 'upload'
 
-    // 2. Zapisz PDF do Supabase Storage - prawdziwy fire & forget, nie blokuje odpowiedzi
-    const fileName = `${Date.now()}_${pdfFile.name.replace(/[^a-zA-Z0-9._-]/g, '_')}`
+    // 2. Konwertuj plik na obrazy JPEG (PDF → JPG strona po stronie, DOCX → JPG, obraz → JPG)
+    const imageParts = await fileToImageParts(fileBytes, originalMime, originalName, 4)
+
+    if (imageParts.length === 0) {
+      return errorResponse('Nie można przekonwertować pliku na obraz. Sprawdź format (PDF, DOCX, JPG, PNG).', 422)
+    }
+
+    console.log(`OCR: ${originalName} → ${imageParts.length} stron(y) JPEG`)
+
+    // 3. Zapisz oryginalny plik do Supabase Storage (fire & forget, nie blokuje)
+    const safeExt = originalName.split('.').pop()?.replace(/[^a-z0-9]/gi, '') || 'pdf'
+    const fileName = `${Date.now()}_${originalName.replace(/[^a-zA-Z0-9._-]/g, '_').substring(0, 60)}.${safeExt}`
     let pdfUrl: string | null = null
 
     supabase.storage
       .from('pdfs')
-      .upload(fileName, pdfBuffer, { contentType: 'application/pdf', upsert: false })
+      .upload(fileName, fileBuffer, { contentType: originalMime, upsert: false })
       .then(({ data, error }) => {
         if (!error && data) {
-          const { data: urlData } = supabase.storage
-            .from('pdfs')
-            .getPublicUrl(data.path)
+          const { data: urlData } = supabase.storage.from('pdfs').getPublicUrl(data.path)
           pdfUrl = urlData.publicUrl
         }
       })
-      .catch(() => { /* ignoruj błędy uploadu */ })
+      .catch(() => {})
 
-    // 3. Wywołaj Gemini (nie czekamy na upload)
-    const geminiResponse = await model.generateContent([
-      {
-        inlineData: {
-          mimeType: 'application/pdf',
-          data: pdfBase64,
-        },
-      },
+    // 4. Wyślij WSZYSTKIE strony jako obrazy JPEG do Gemini — wizualna analiza całego dokumentu
+    const geminiParts = [
+      ...imageParts,
       PROMPT_OCR_FAST,
-    ])
+    ]
 
-    // 5. Parsuj odpowiedź
+    const geminiResponse = await model.generateContent(geminiParts)
     const rawText = geminiResponse.response.text()
 
+    // 5. Parsuj JSON z odpowiedzi
     let extracted: Record<string, unknown> = {}
     try {
       const jsonMatch = rawText.match(/\{[\s\S]*\}/)
@@ -82,10 +82,10 @@ Deno.serve(async (req) => {
         extracted = JSON.parse(jsonMatch[0])
       }
     } catch {
-      return errorResponse('Błąd parsowania odpowiedzi AI: ' + rawText, 422)
+      return errorResponse('Błąd parsowania odpowiedzi AI: ' + rawText.substring(0, 500), 422)
     }
 
-    // 6. Sprawdź czy kontrahent już istnieje (po NIP)
+    // 6. Sprawdź czy kontrahent już istnieje w bazie (po NIP)
     let kontrahentMatch: Record<string, unknown> | null = null
     const nip = extracted.zleceniodawca_nip as string
     if (nip) {
@@ -94,10 +94,7 @@ Deno.serve(async (req) => {
         .select('id, nazwa, nip, adres_kod, adres_miasto, kraj, email, telefon')
         .eq('nip', nip)
         .maybeSingle()
-
-      if (existing) {
-        kontrahentMatch = existing
-      }
+      if (existing) kontrahentMatch = existing
     }
 
     // 7. Zwróć dane do frontendu
@@ -109,6 +106,7 @@ Deno.serve(async (req) => {
       kontrahent_match: kontrahentMatch,
       usage: {
         model: 'gemini-2.5-flash',
+        pages: imageParts.length,
         input_tokens: geminiResponse.response.usageMetadata?.promptTokenCount ?? 0,
         output_tokens: geminiResponse.response.usageMetadata?.candidatesTokenCount ?? 0,
       },

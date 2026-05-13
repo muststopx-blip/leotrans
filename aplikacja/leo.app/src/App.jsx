@@ -149,8 +149,10 @@ function App() {
     numer_zlecenia: '',
     kontrahent: '',
     kontrahent_id: null,
+    kontrahentNip: '',
     kontrahentKraj: '',
     kontrahentKod: '',
+    kontrahentMiasto: '',
     spedytor: '',
     nr_leo: '',
     cena_eur: '',
@@ -329,8 +331,10 @@ function App() {
         numer_zlecenia: ex.numer_zlecenia || '',
         kontrahent: ex.zleceniodawca_nazwa || '',
         kontrahent_id: data.kontrahent_match?.id || null,
+        kontrahentNip: data.kontrahent_match?.nip || ex.zleceniodawca_nip || '',
         kontrahentKraj: data.kontrahent_match?.kraj || ex.zleceniodawca_kraj || '',
         kontrahentKod: data.kontrahent_match?.adres_kod || ex.zleceniodawca_kod || '',
+        kontrahentMiasto: data.kontrahent_match?.adres_miasto || '',
         kontrahentEmail: emaileKontrahenta,
         kontrahentTelefon: ex.zleceniodawca_telefon || data.kontrahent_match?.telefon || '',
         cena_eur: ex.cena_eur?.toString() || '',
@@ -400,7 +404,13 @@ function App() {
         numer_zlecenia: formData.numer_zlecenia || null,
         kontrahent_id: formData.kontrahent_id || null,
         kontrahent_nowy: !formData.kontrahent_id && formData.kontrahent
-          ? { nazwa: formData.kontrahent } : undefined,
+          ? {
+              nazwa: formData.kontrahent,
+              nip: formData.kontrahentNip || null,
+              adres_kod: formData.kontrahentKod || null,
+              adres_miasto: formData.kontrahentMiasto || null,
+              kraj: formData.kontrahentKraj || null,
+            } : undefined,
         spedytor: formData.spedytor || null,
         nr_leo: formData.nr_leo ? `LEO-${formData.nr_leo.padStart(3, '0')}` : null,
         rodzaj_zlecenia: formData.rodzajZlecenia,
@@ -794,16 +804,112 @@ function App() {
                     </div>
 
                     {isAmazonForm ? (<>
-                    {(formData.rodzajZlecenia === 'AMAZON' || formData.rodzajZlecenia === 'AMAZON PRYWATNE') && (
-                      <div className="bg-amber-50 border border-amber-200 rounded-lg p-3">
-                        <div className="flex items-center gap-2 mb-1.5">
+
+                      {/* Amazon: status chips + booking ID + cena */}
+                      <div className={boxClass}>
+                        <div className="flex items-center gap-2 mb-2">
                           <span className="px-2 py-0.5 bg-amber-400 text-white text-xs font-bold rounded uppercase">Amazon</span>
-                          <span className="text-xs font-bold text-amber-700 uppercase tracking-wide">SKĄD AMAZON</span>
+                          {['NOWE', 'AKTUALIZACJA', 'ANULOWANIE'].map(s => (
+                            <button key={s} type="button"
+                              onClick={() => handleInputChange('amazonStatus', s)}
+                              className={`px-3 py-1 text-xs font-bold rounded transition ${formData.amazonStatus === s ? 'bg-navy text-white' : 'bg-gray-100 text-gray-600 hover:bg-gray-200'}`}>
+                              {s}
+                            </button>
+                          ))}
                         </div>
-                        <input type="text" className="input-field" placeholder="np. Amazon Logistics DE, booking ref, FC code..."
-                          value={formData.amazonSkad} onChange={e => handleInputChange('amazonSkad', e.target.value)} />
+                        <div className={`grid grid-cols-2 ${gridGap}`}>
+                          <div className="form-group mb-0">
+                            <label>BOOKING ID</label>
+                            <input type="text" className="input-field font-mono tracking-wider" placeholder="1119N6M7M"
+                              value={formData.numer_zlecenia} onChange={e => handleInputChange('numer_zlecenia', e.target.value)} />
+                          </div>
+                          <div className="form-group mb-0">
+                            <label>FRACHT EUR</label>
+                            <input type="text" inputMode="decimal" className="input-field" placeholder="0.00"
+                              value={formData.cena_eur} onChange={e => handleInputChange('cena_eur', e.target.value)} />
+                          </div>
+                        </div>
                       </div>
-                    )}
+
+                      {/* Amazon Załadunki */}
+                      {zaladunki.map((zal, index) => (
+                        <div key={zal.id} className="border border-gray-200 rounded overflow-hidden">
+                          <div className="flex justify-between items-center px-3 py-1.5 bg-green-700">
+                            <h3 className="text-xs font-bold text-white uppercase tracking-wide">ZAŁADUNEK {zaladunki.length > 1 ? index + 1 : ''}</h3>
+                            {zaladunki.length > 1 && <button type="button" onClick={() => usunZaladunek(zal.id)} className="text-green-200 hover:text-white font-bold text-xs">USUŃ</button>}
+                          </div>
+                          <div className="p-2">
+                            <div className="grid grid-cols-5 gap-2">
+                              <div className="form-group mb-0"><label>MIASTO</label>
+                                <input type="text" className="input-field" placeholder="ERFURT"
+                                  value={zal.miasto} onChange={e => updateZaladunek(zal.id, 'miasto', e.target.value)} />
+                              </div>
+                              <div className="form-group mb-0"><label>FC CODE</label>
+                                <input type="text" className="input-field font-mono" placeholder="ERF1"
+                                  value={zal.nazwa_firmy || ''} onChange={e => updateZaladunek(zal.id, 'nazwa_firmy', e.target.value)} />
+                              </div>
+                              <div className="form-group mb-0"><label>KOD</label>
+                                <input type="text" className="input-field font-mono" placeholder="DE99095"
+                                  value={krajCode(zal.kraj) + zal.kod}
+                                  onChange={e => { const p = parseAmazonCode(e.target.value); updateZaladunek(zal.id, 'kod', p.kod); if (p.kraj) updateZaladunek(zal.id, 'kraj', p.kraj) }} />
+                              </div>
+                              <div className="form-group mb-0"><label>CZAS</label>
+                                <input type="time" className="input-field" value={zal.oknoOd}
+                                  onChange={e => { updateZaladunek(zal.id, 'oknoOd', e.target.value); updateZaladunek(zal.id, 'maOkno', true) }} />
+                              </div>
+                              <div className="form-group mb-0"><label>DATA</label>
+                                <input type="date" className="input-field" value={zal.data}
+                                  onChange={e => updateZaladunek(zal.id, 'data', e.target.value)} />
+                              </div>
+                            </div>
+                          </div>
+                        </div>
+                      ))}
+                      <button type="button" onClick={dodajZaladunek} className="w-full py-1 border-2 border-dashed border-green-700 text-green-700 hover:bg-green-700 hover:text-white transition font-bold rounded text-xs">
+                        + DODAJ ZAŁADUNEK
+                      </button>
+
+                      {/* Amazon Rozładunki */}
+                      {rozladunki.map((roz, index) => (
+                        <div key={roz.id} className="border border-gray-200 rounded overflow-hidden">
+                          <div className="flex justify-between items-center px-3 py-1.5 bg-copper">
+                            <h3 className="text-xs font-bold text-white uppercase tracking-wide">ROZŁADUNEK {rozladunki.length > 1 ? index + 1 : ''}</h3>
+                            {rozladunki.length > 1 && <button type="button" onClick={() => usunRozladunek(roz.id)} className="text-orange-200 hover:text-white font-bold text-xs">USUŃ</button>}
+                          </div>
+                          <div className="p-2">
+                            <div className="grid grid-cols-5 gap-2">
+                              <div className="form-group mb-0"><label>MIASTO</label>
+                                <input type="text" className="input-field" placeholder="MOOSBURG"
+                                  value={roz.miasto} onChange={e => updateRozladunek(roz.id, 'miasto', e.target.value)} />
+                              </div>
+                              <div className="form-group mb-0"><label>FC CODE</label>
+                                <input type="text" className="input-field font-mono" placeholder="DMU3"
+                                  value={roz.nazwa_firmy || ''} onChange={e => updateRozladunek(roz.id, 'nazwa_firmy', e.target.value)} />
+                              </div>
+                              <div className="form-group mb-0"><label>KOD</label>
+                                <input type="text" className="input-field font-mono" placeholder="DE85368"
+                                  value={krajCode(roz.kraj) + roz.kod}
+                                  onChange={e => { const p = parseAmazonCode(e.target.value); updateRozladunek(roz.id, 'kod', p.kod); if (p.kraj) updateRozladunek(roz.id, 'kraj', p.kraj) }} />
+                              </div>
+                              <div className="form-group mb-0"><label>CZAS</label>
+                                <input type="time" className="input-field" value={roz.oknoOd}
+                                  onChange={e => { updateRozladunek(roz.id, 'oknoOd', e.target.value); updateRozladunek(roz.id, 'maOkno', true) }} />
+                              </div>
+                              <div className="form-group mb-0"><label>DATA</label>
+                                <input type="date" className="input-field" value={roz.data}
+                                  onChange={e => updateRozladunek(roz.id, 'data', e.target.value)} />
+                              </div>
+                            </div>
+                          </div>
+                        </div>
+                      ))}
+                      <button type="button" onClick={dodajRozladunek} className="w-full py-1 border-2 border-dashed border-copper text-copper hover:bg-copper hover:text-white transition font-bold rounded text-xs">
+                        + DODAJ ROZŁADUNEK
+                      </button>
+
+                    </>) : (<>
+
+                    {/* Wiersz 2: numer zlecenia + cena (STANDARD ONLY) */}
 
                     {/* Wiersz 2: numer zlecenia + cena */}
                     <div className={boxClass}>
@@ -1082,6 +1188,8 @@ function App() {
                       </div>
                     </div>
 
+                    </>)}
+
                     <div className="flex gap-3 justify-end">
                       <button type="button" className="btn-secondary" onClick={() => { setPdfUploaded(false); setError(null) }}>ANULUJ</button>
                       <button type="submit" className="btn-primary" disabled={isSaving}>
@@ -1147,7 +1255,12 @@ function App() {
                         className="w-full text-left bg-white border border-gray-200 rounded-xl p-3 shadow-sm active:bg-gray-50">
                         <div className="flex items-center justify-between mb-1.5">
                           <div className="flex items-center gap-1.5">
-                            {order.enrichment_status === 'processing' && <span className="w-1.5 h-1.5 rounded-full bg-amber-400 animate-pulse" />}
+                            {(order.enrichment_status === 'processing' || order.enrichment_status === 'pending') && (
+                              <svg className="w-3.5 h-3.5 animate-spin text-amber-400 flex-shrink-0" viewBox="0 0 24 24" fill="none">
+                                <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="3"/>
+                                <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/>
+                              </svg>
+                            )}
                             <span className="px-2 py-0.5 rounded text-xs font-bold bg-navy text-white">{order.nr_leo || '—'}</span>
                             {isAmaz && <span className="px-1.5 py-0.5 rounded text-xs font-bold bg-amber-100 text-amber-700">AMZ</span>}
                           </div>
@@ -1199,8 +1312,11 @@ function App() {
                           <tr key={order.id} className="hover:bg-blue-50/40 transition-colors">
                             <td className="px-2 py-1.5 whitespace-nowrap">
                               <div className="flex items-center gap-1">
-                                {order.enrichment_status === 'processing' && (
-                                  <span className="w-1.5 h-1.5 rounded-full bg-amber-400 animate-pulse flex-shrink-0" />
+                                {(order.enrichment_status === 'processing' || order.enrichment_status === 'pending') && (
+                                  <svg className="w-3.5 h-3.5 animate-spin text-amber-400 flex-shrink-0" viewBox="0 0 24 24" fill="none">
+                                    <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="3"/>
+                                    <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/>
+                                  </svg>
                                 )}
                                 <span className="inline-flex items-center px-1.5 py-0.5 rounded text-xs font-bold bg-navy text-white">{order.nr_leo || '—'}</span>
                               </div>
